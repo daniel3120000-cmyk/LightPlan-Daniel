@@ -50,7 +50,8 @@ with st.sidebar.expander("🤖 סריקת חדר אוטומטית (AI Vision)", 
             with st.spinner("ה-AI מנתח את החלל..."):
                 try:
                     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    # תיקון השגיאה - שימוש בגרסה העדכנית ביותר של המודל
+                    model = genai.GenerativeModel('gemini-1.5-flash-latest')
                     img = Image.open(uploaded_img)
                     prompt = """Analyze this room. Return ONLY a valid JSON. Keys: 
                     "room_w": float (width in meters), "room_d": float (depth in meters), "wall_mat": string (choose: "טיח לבן", "בטון", "עץ", "זכוכית")"""
@@ -116,7 +117,7 @@ if st.sidebar.button("💾 שמור פרויקט ל-MongoDB"):
         st.sidebar.error("אין חיבור למסד הנתונים")
 
 # ==========================================
-# 6. מנוע פיזיקלי משולב (הכל בבת אחת)
+# 6. מנוע פיזיקלי משולב
 # ==========================================
 st.sidebar.header("💡 תאורה הנדסית")
 num_lamps = st.sidebar.number_input("מספר גופים", 1, 10, 2)
@@ -137,7 +138,6 @@ X, Y = np.meshgrid(x, y)
 lux_grid = np.zeros_like(X)
 ugr_comp = np.zeros_like(X)
 
-# יצירת מסיכה לצורת L
 mask = np.ones_like(X)
 if room_shape == "צורת L (L-Shape)":
     mask[(X > room_w/2) & (Y > room_d/2)] = 0
@@ -156,17 +156,14 @@ for l in lamps:
     lux_grid += lamp_lux * mask
     ugr_comp += (lamp_lux**2) / (dz**2 + 0.1)
 
-# הוספת אור יום והחזרים מהקירות
 if daylight_toggle:
     lux_grid[(X < 0.5) & mask.astype(bool)] += sun_lux
 reflection = (sum(l['p'] for l in lamps) * rho_w * 6) / (room_w * room_d)
 lux_grid += reflection * mask
 
-# צללים של רהיטים
 if sensor_h < bh: lux_grid[(X >= bx) & (X <= bx+1.6) & (Y >= by) & (Y <= by+2.0)] *= 0.15
 if sensor_h < dh: lux_grid[(X >= dx) & (X <= dx+1.2) & (Y >= dy) & (Y <= dy+0.7)] *= 0.15
 
-# פונקציה מקוצרת לחישוב אור עילי על הרהיטים (כדי לחסוך קוד כפול)
 def get_surface_lux(x_arr, y_arr, z_val):
     g = np.zeros_like(x_arr)
     for l in lamps:
@@ -194,19 +191,27 @@ tab_3d, tab_2d = st.tabs(["🎮 3D Engineering Studio", "📊 מפת חום ות
 
 with tab_3d:
     fig = go.Figure()
-    # רצפה / מישור המדידה
-    lux_display = np.where(mask == 1, lux_grid, np.nan) # מסתיר את החלק החתוך ב-L
-    fig.add_trace(go.Surface(x=X, y=Y, z=np.full_like(X, sensor_h), surfacecolor=lux_display, colorscale='Turbo',
-                             hovertemplate='X: %{x:.1f}m<br>Y: %{y:.1f}m<br><b>Lux: %{surfacecolor:.0f}</b><extra></extra>'))
+    lux_display = np.where(mask == 1, lux_grid, np.nan)
     
-    # משטחי רהיטים
-    fig.add_trace(go.Surface(x=X_b, y=Y_b, z=np.full_like(X_b, bh), surfacecolor=lux_b, colorscale='Turbo', showscale=False))
-    fig.add_trace(go.Surface(x=X_t, y=Y_t, z=np.full_like(X_t, dh), surfacecolor=lux_t, colorscale='Turbo', showscale=False))
+    # שכבת ה-Hover לרצפה (מדויק וקריא)
+    fig.add_trace(go.Surface(x=X, y=Y, z=np.full_like(X, sensor_h), surfacecolor=lux_display, colorscale='Turbo',
+                             customdata=lux_display,
+                             hovertemplate='<b>Lux: %{customdata:.0f}</b><br>X: %{x:.1f}m<br>Y: %{y:.1f}m<extra></extra>'))
+    
+    # שכבת ה-Hover למיטה
+    fig.add_trace(go.Surface(x=X_b, y=Y_b, z=np.full_like(X_b, bh), surfacecolor=lux_b, colorscale='Turbo', showscale=False,
+                             customdata=lux_b,
+                             hovertemplate='<b>Lux (על המיטה): %{customdata:.0f}</b><extra></extra>'))
+    
+    # שכבת ה-Hover לשולחן
+    fig.add_trace(go.Surface(x=X_t, y=Y_t, z=np.full_like(X_t, dh), surfacecolor=lux_t, colorscale='Turbo', showscale=False,
+                             customdata=lux_t,
+                             hovertemplate='<b>Lux (על השולחן): %{customdata:.0f}</b><extra></extra>'))
 
     # מנורות
     for l in lamps:
         fig.add_trace(go.Scatter3d(x=[l['x']], y=[l['y']], z=[l['z']], mode='markers',
-                                   marker=dict(size=12, color='gold', symbol='diamond'), name="מנורה"))
+                                   marker=dict(size=12, color='gold', symbol='diamond'), name="מנורה", hoverinfo='skip'))
 
     fig.update_layout(scene=dict(aspectmode='data', zaxis=dict(range=[0, room_h])), height=700, margin=dict(l=0,r=0,b=0,t=0))
     st.plotly_chart(fig, use_container_width=True)
@@ -219,7 +224,9 @@ with tab_2d:
     c3.metric("מדד סנוור (UGR)", f"{ugr_val:.1f}", delta="מסנוור" if ugr_val > 19 else "תקין", delta_color="inverse")
     c4.metric("סטטוס כללי", "עובר ✅" if avg_lux >= 270 else "נכשל ❌")
     
-    fig_heat = go.Figure(data=go.Contour(z=lux_display, x=x, y=y, colorscale='Turbo'))
+    fig_heat = go.Figure(data=go.Contour(z=lux_display, x=x, y=y, colorscale='Turbo',
+                                         customdata=lux_display,
+                                         hovertemplate='<b>Lux: %{customdata:.0f}</b><extra></extra>'))
     fig_heat.update_layout(title="חתך דו-מימדי (Heatmap)")
     st.plotly_chart(fig_heat, use_container_width=True)
 
